@@ -42,29 +42,29 @@ jobs:
           import json
           from pathlib import Path
           import subprocess
-           
+ 
           def get_file_content(file_path):
               try:
                   return Path(file_path).read_text()
               except:
                   return ""
-           
+ 
           def get_file_history(file_path):
               try:
                   result = subprocess.run(['git', 'blame', file_path], capture_output=True, text=True)
                   return result.stdout
               except:
                   return ""
-           
+ 
           def get_test_coverage(file_path):
               return "No test coverage data available"
-           
+ 
           def analyze_complexity(content):
               lines = content.split('\n')
               indentation_levels = [len(line) - len(line.lstrip()) for line in lines if line.strip()]
               max_complexity = max(indentation_levels) if indentation_levels else 0
               return max_complexity
-           
+ 
           def post_review(review, suggestions=None):
               url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/pulls/{os.environ['PR_NUMBER']}/reviews"
               headers = {
@@ -78,76 +78,76 @@ jobs:
                   "event": "COMMENT"
               }
               requests.post(url, headers=headers, json=data)
-           
+ 
           def get_commit_messages():
               try:
                   result = subprocess.run(['git', 'log', '-5', '--oneline'], capture_output=True, text=True)
                   return result.stdout
               except:
                   return ""
-           
+ 
           def generate_test_cases(content):
               client = openai.AzureOpenAI(
                   api_key=os.environ["AZURE_OPENAI_API_KEY"],
                   api_version="2024-06-01",
                   azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
               )
-           
-              prompt = f"""Generate unit test cases for the following code. Ensure the test cases are valid Python code using the pytest framework.
-           
+ 
+              prompt = f"""Generate unit test cases for the following code:
+ 
               Code:
               ```
               {content}
               ```
-           
-              Provide only the Python code for the test cases, without any additional explanations or descriptions. The test cases should be written in a file that can be directly executed by pytest."""
-           
+ 
+              Provide the test cases in Python using the pytest framework."""
+ 
               response = client.chat.completions.create(
                   model="gpt4o",
                   messages=[
-                      {"role": "system", "content": "You are a senior software engineer generating unit test cases. Provide only valid Python code for pytest."},
+                      {"role": "system", "content": "You are a senior software engineer generating unit test cases."},
                       {"role": "user", "content": prompt}
                   ],
                   temperature=0.2,
                   max_tokens=2000
               )
-           
+ 
               return response.choices[0].message.content
-           
+ 
           def execute_test_cases(test_cases, file_path):
               test_file = Path(file_path).stem + "_test.py"
               with open(test_file, "w") as f:
                   f.write(test_cases)
               result = subprocess.run(['pytest', test_file], capture_output=True, text=True)
               return result.stdout
-           
+ 
           client = openai.AzureOpenAI(
               api_key=os.environ["AZURE_OPENAI_API_KEY"],
               api_version="2024-06-01",
               azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
           )
-           
+ 
           changed_files = os.environ["FILES"].split()
-           
+ 
           for file_path in changed_files:
               if not file_path.endswith(('.py', '.js', '.java', '.cpp', '.ts')):
                   continue
               content = get_file_content(file_path)
               if not content:
                   continue
-           
+ 
               file_history = get_file_history(file_path)
               test_coverage = get_test_coverage(file_path)
               complexity = analyze_complexity(content)
               recent_commits = get_commit_messages()
-           
+ 
               prompt = f"""As a senior software engineer, perform a comprehensive code review with the following context:
-           
+ 
               File: {file_path}
               Code Complexity Score: {complexity}
               Test Coverage: {test_coverage}
               Recent Commit History: {recent_commits}
-           
+ 
               Review this code for:
               1. Potential bugs and edge cases
               2. Security vulnerabilities and best practices
@@ -159,24 +159,24 @@ jobs:
               8. Dependency management
               9. Error handling
               10. Scalability considerations
-           
+ 
               Also provide:
               - Specific refactoring suggestions
               - Examples of better implementations where applicable
               - Impact analysis of changes
               - Risk assessment
               - Technical debt evaluation
-           
+ 
               Code:
               ```
               {content}
               ```
-           
+ 
               File History Context:
               {file_history}
-           
+ 
               Provide detailed, actionable feedback with code examples where relevant."""
-           
+ 
               response = client.chat.completions.create(
                   model="gpt4o",
                   messages=[
@@ -186,7 +186,7 @@ jobs:
                   temperature=0.2,
                   max_tokens=2000
               )
-           
+ 
               review_content = response.choices[0].message.content
               metrics = {
                   "complexity_score": complexity,
@@ -194,32 +194,33 @@ jobs:
                   "major_concerns": review_content.count('major concern'),
                   "suggestions": review_content.count('suggest'),
               }
-           
+ 
               review = f"""## Code Review for {file_path}
-           
+ 
               ### Metrics
+              ##DONE
               - Complexity Score: {metrics['complexity_score']}
               - Lines Reviewed: {metrics['reviewed_lines']}
               - Major Concerns: {metrics['major_concerns']}
               - Suggestions: {metrics['suggestions']}
-           
+ 
               ### Detailed Review
               {review_content}
               """
               post_review(review)
-           
+ 
               # Generate and execute test cases
               test_cases = generate_test_cases(content)
               test_results = execute_test_cases(test_cases, file_path)
-           
+ 
               # Post test results
               test_review = f"""## Test Results for {file_path}
-           
+ 
               ### Generated Test Cases
               ```python
               {test_cases}
               ```
-           
+ 
               ### Test Execution Results
               ```
               {test_results}
