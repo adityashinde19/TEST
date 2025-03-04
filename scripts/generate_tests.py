@@ -1,6 +1,7 @@
 import os
 import logging
 import openai
+from openai import AzureOpenAI
 from pathlib import Path
 import requests
 
