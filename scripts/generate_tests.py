@@ -35,7 +35,7 @@ def read_code_files(directory='.'):
         raise
 
 def generate_test_cases():
-     client = openai.AzureOpenAI(
+    client = openai.AzureOpenAI(
                 api_key=os.environ["AZURE_OPENAI_API_KEY"],
                 azure_deployment="gpt4o",
                 api_version="2024-08-01-preview",
