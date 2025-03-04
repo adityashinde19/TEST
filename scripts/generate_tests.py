@@ -4,105 +4,45 @@ import openai
 from openai import AzureOpenAI
 from pathlib import Path
 import requests
+import glob
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('test-output.log'),
-        logging.StreamHandler()
-    ]
-)
-
-logger = logging.getLogger(__name__)
-
-def read_code_files(directory='.'):
-    code_files = []
-    try:
-        for path in Path(directory).rglob('*'):
-            if path.is_file() and path.suffix in ['.py', '.js', '.html']:  # Add more extensions as needed
-                try:
-                    with open(path, 'r') as f:
-                        content = f.read()
-                        code_files.append(f"File: {path}\nContent:\n{content}")
-                        logger.info(f"Read file: {path}")
-                except UnicodeDecodeError:
-                    logger.warning(f"Skipped binary/unreadable file: {path}")
-        return "\n".join(code_files)
-    except Exception as e:
-        logger.error(f"Error reading files: {str(e)}")
-        raise
-
-def generate_test_cases():
-    client = openai.AzureOpenAI(
-                api_key=os.environ["AZURE_OPENAI_API_KEY"],
-                azure_deployment="gpt4o",
-                api_version="2024-08-01-preview",
-                azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
-            )
-
-    logger.info("Starting test generation process...")
-    code_content = read_code_files()
+def generate_tests():
+    # Initialize Azure OpenAI client
+    client = AzureOpenAI(
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        api_version="2023-12-01-preview",
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+    )
     
-    prompt = f"""
-    Generate comprehensive Selenium test cases in Python using pytest format.
-    Follow this exact structure:
-
-    from selenium import webdriver
-    import pytest
-
-    class TestGeneratedCases:
-        @pytest.fixture(scope='class')
-        def setup(self):
-            logger.info("Initializing browser")
-            driver = webdriver.Chrome()
-            yield driver
-            driver.quit()
-
-        # Add test methods here with detailed logging
-
-    Include:
-    - Detailed logging using Python's logging module
-    - Assertions for proper validation
-    - Error handling with try/except blocks
-    - Page interaction best practices
-    - Comments explaining test logic
-
-    Target codebase:
-    {code_content}
-    """
-
-    try:
-        logger.info("Sending request to Azure OpenAI...")
-        response = client.chat.completions.create(
-            model="gpt4o",
-            messages=[
-                    {"role": "system", "content": "You are a Python expert specializing in code quality and test case generation. Your reviews are constructive, specific, and educational."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=2500
-            )
-
-        test_code = response.choices[0].message.content
-        logger.info("Successfully received response from Azure OpenAI")
-        logger.debug(f"Generated Test Code:\n{test_code}")
-
-        # Save generated tests
-        output_dir = Path('generated_tests')
-        output_dir.mkdir(exist_ok=True)
-        
-        test_file = output_dir / 'test_generated.py'
-        with open(test_file, 'w') as f:
-            f.write(test_code)
-            logger.info(f"Tests written to {test_file}")
-
-        return True
-
-    except Exception as e:
-        logger.error(f"Test generation failed: {str(e)}")
-        raise
+    # Get all source code files
+    source_files = glob.glob('src/**/*.py', recursive=True)
+    
+    # Read and concatenate source code
+    source_code = ""
+    for file in source_files:
+        with open(file, 'r') as f:
+            source_code += f"\n\n# File: {file}\n{f.read()}"
+    
+    # Truncate to fit context window
+    source_code = source_code[:12000]  # Adjust based on model context window
+    
+    # Generate tests using Azure OpenAI
+    response = client.chat.completions.create(
+        model="gpt-4",  # Use your deployed model name
+        messages=[
+            {"role": "system", "content": "You are a senior QA engineer. Generate comprehensive test cases in Python using pytest format."},
+            {"role": "user", "content": f"Generate pytest test cases for this code:\n{source_code}\n\nOutput only the test code with no explanations."}
+        ],
+        temperature=0.2,
+        max_tokens=2000
+    )
+    
+    # Save generated tests
+    test_code = response.choices[0].message.content
+    with open('tests/test_generated.py', 'w') as f:
+        f.write(test_code)
+    
+    print("Test generation completed")
 
 if __name__ == "__main__":
-    generate_test_cases()
+    generate_tests()
