@@ -1,9 +1,12 @@
-name: Advanced Azure OpenAI Code Review and Regression Testing
+name: Python Best Practices Code Review
+ 
 on:
   pull_request:
     types: [opened, synchronize]
+    paths:
+      - '**.py'  # Only trigger on Python files
 jobs:
-  review:
+  python-review:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -12,10 +15,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Get changed files
+      - name: Get changed Python files
         id: changed-files
         run: |
-          echo "files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          echo "files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep '\.py$' | tr '\n' ' ')" >> $GITHUB_OUTPUT
+ 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -23,8 +27,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install openai requests pytest
-      - name: Review Code and Generate Test Cases
+          pip install openai requests
+ 
+      - name: Review Python Code
         env:
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
@@ -32,164 +37,174 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           FILES: ${{ steps.changed-files.outputs.files }}
         run: |
-          cat > review_and_test.py << 'EOL'
+          cat > python_review.py << 'EOL'
           import os
           import openai
           import requests
           import json
+          import re
           from pathlib import Path
-          import subprocess
+ 
           def get_file_content(file_path):
               try:
                   return Path(file_path).read_text()
               except:
                   return ""
-          def get_file_history(file_path):
+ 
+          def analyze_pep8_compliance(file_path):
               try:
-                  result = subprocess.run(['git', 'blame', file_path], capture_output=True, text=True)
-                  return result.stdout
+                  import subprocess
+                  result = subprocess.run(['python', '-m', 'pycodestyle', file_path], capture_output=True, text=True)
+                  return result.stdout if result.stdout else "No PEP 8 issues found."
               except:
-                  return ""
-          def get_test_coverage(file_path):
-              return "No test coverage data available"
-          def analyze_complexity(content):
-              lines = content.split('\n')
-              indentation_levels = [len(line) - len(line.lstrip()) for line in lines if line.strip()]
-              max_complexity = max(indentation_levels) if indentation_levels else 0
-              return max_complexity
-          def post_review(review, suggestions=None):
+                  return "PEP 8 analysis unavailable"
+ 
+          def count_functions_and_classes(content):
+              import re
+              function_matches = re.findall(r'def\s+\w+\s*\(', content)
+              class_matches = re.findall(r'class\s+\w+\s*[(:)]', content)
+              return len(function_matches), len(class_matches)
+ 
+          def post_review(review, file_path):
               url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/pulls/{os.environ['PR_NUMBER']}/reviews"
               headers = {
                   "Accept": "application/vnd.github.v3+json",
                   "Authorization": f"token {os.environ['GITHUB_TOKEN']}"
               }
-              if suggestions:
-                  review += "\n\n### Suggested Changes:\n" + "\n".join(suggestions)
               data = {
                   "body": review,
                   "event": "COMMENT"
               }
-              requests.post(url, headers=headers, json=data)
-          def get_commit_messages():
-              try:
-                  result = subprocess.run(['git', 'log', '-5', '--oneline'], capture_output=True, text=True)
-                  return result.stdout
-              except:
-                  return ""
-          def generate_test_cases(content):
-              client = openai.AzureOpenAI(
-                  api_key=os.environ["AZURE_OPENAI_API_KEY"],
-                  api_version="2024-06-01",
-                  azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
-              )
-              prompt = f"""Generate unit test cases for the following code:
-              Code:
-              ```
-              {content}
-              ```
-              Provide the test cases in Python using the pytest framework."""
-              response = client.chat.completions.create(
-                  model="gpt4o",
-                  messages=[
-                      {"role": "system", "content": "You are a senior software engineer generating unit test cases."},
-                      {"role": "user", "content": prompt}
-                  ],
-                  temperature=0.2,
-                  max_tokens=2000
-              )
-              return response.choices[0].message.content
-          def execute_test_cases(test_cases, file_path):
-              test_file = Path(file_path).stem + "_test.py"
-              with open(test_file, "w") as f:
-                  f.write(test_cases)
-              result = subprocess.run(['pytest', test_file], capture_output=True, text=True)
-              return result.stdout
+              response = requests.post(url, headers=headers, json=data)
+              if response.status_code != 200:
+                  print(f"Failed to post review for {file_path}. Status code: {response.status_code}, Response: {response.text}")
+ 
           client = openai.AzureOpenAI(
               api_key=os.environ["AZURE_OPENAI_API_KEY"],
               api_version="2024-06-01",
               azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
           )
+ 
           changed_files = os.environ["FILES"].split()
+          if not changed_files or changed_files == ['']:
+              print("No Python files were changed in this PR.")
+              exit(0)
+ 
           for file_path in changed_files:
-              if not file_path.endswith(('.py', '.js', '.java', '.cpp', '.ts')):
+              if not file_path.endswith('.py'):
                   continue
               content = get_file_content(file_path)
               if not content:
                   continue
-              file_history = get_file_history(file_path)
-              test_coverage = get_test_coverage(file_path)
-              complexity = analyze_complexity(content)
-              recent_commits = get_commit_messages()
-              prompt = f"""As a senior software engineer, perform a comprehensive code review with the following context:
+ 
+              # Get additional analysis
+              pep8_analysis = analyze_pep8_compliance(file_path)
+              func_count, class_count = count_functions_and_classes(content)
+ 
+              prompt = f"""As a senior Python developer, review this code for adherence to Python best practices with particular focus on:
+ 
+              1. PEP 8 Compliance:
+                 - 4 spaces per indentation level
+                 - 79 character line limit
+                 - snake_case for variables and functions
+                 - UPPERCASE for constants
+                 - Proper spacing around operators and after commas
+                 - Proper module/class/function docstrings
+ 
+              2. Variable Naming:
+                 - Are variable names descriptive and meaningful?
+                 - Are they following Python naming conventions?
+                 - Are constants properly named in uppercase?
+ 
+              3. Magic Numbers:
+                 - Identify any hard-coded numeric literals without explanation
+                 - Suggest replacing them with named constants
+ 
+              4. Pythonic Constructs:
+                 - Appropriate use of list/dict comprehensions
+                 - Proper use of generators where applicable
+                 - Using built-in functions effectively (map, filter, etc.)
+                 - Proper use of context managers (with statements)
+ 
+              5. Error Handling:
+                 - Proper use of try-except blocks
+                 - Catching specific exceptions instead of bare except
+                 - Proper exception handling and recovery
+ 
+              6. Global Variables:
+                 - Identify any unnecessary global variables
+                 - Suggest alternatives using function parameters and return values
+ 
+              7. Documentation:
+                 - Check for proper docstrings (Google/NumPy/reST style)
+                 - Appropriate inline comments for complex logic
+                 - Are docstrings present for modules, classes, and functions?
+ 
+              8. Code Structure:
+                 - Function/method length (should be focused and not too long)
+                 - Single responsibility principle
+                 - Import organization and best practices
+                 - Proper use of OOP concepts if applicable
+ 
               File: {file_path}
-              Code Complexity Score: {complexity}
-              Test Coverage: {test_coverage}
-              Recent Commit History: {recent_commits}
-              Review this code for:
-              1. Potential bugs and edge cases
-              2. Security vulnerabilities and best practices
-              3. Performance optimizations
-              4. Code maintainability and readability
-              5. Design patterns and architecture
-              6. Test coverage recommendations
-              7. Documentation needs
-              8. Dependency management
-              9. Error handling
-              10. Scalability considerations
-              Also provide:
-              - Specific refactoring suggestions
-              - Examples of better implementations where applicable
-              - Impact analysis of changes
-              - Risk assessment
-              - Technical debt evaluation
+              PEP 8 Analysis: {pep8_analysis}
+              Functions: {func_count}
+              Classes: {class_count}
+ 
+              For each issue found, please:
+              1. Point out the specific line or code segment
+              2. Explain why it doesn't follow best practices
+              3. Provide a concrete example of how to improve it
+              4. Assign a severity level (High/Medium/Low)
+ 
               Code:
-              ```
+              ```python
               {content}
               ```
-              File History Context:
-              {file_history}
-              Provide detailed, actionable feedback with code examples where relevant."""
+ 
+              Provide a summary of key findings and an overall assessment of the code quality.
+              """
+ 
               response = client.chat.completions.create(
                   model="gpt4o",
                   messages=[
-                      {"role": "system", "content": "You are a senior software engineer performing a detailed code review. Focus on providing constructive, specific feedback with examples."},
+                      {"role": "system", "content": "You are a Python expert specializing in code quality and best practices. Your reviews are constructive, specific, and educational."},
                       {"role": "user", "content": prompt}
                   ],
-                  temperature=0.2,
-                  max_tokens=2000
+                  temperature=0.1,
+                  max_tokens=2500
               )
+ 
               review_content = response.choices[0].message.content
-              metrics = {
-                  "complexity_score": complexity,
-                  "reviewed_lines": len(content.split('\n')),
-                  "major_concerns": review_content.count('major concern'),
-                  "suggestions": review_content.count('suggest'),
-              }
-              review = f"""## Code Review for {file_path}
-              ### Metrics
-              ##DONE
-              - Complexity Score: {metrics['complexity_score']}
-              - Lines Reviewed: {metrics['reviewed_lines']}
-              - Major Concerns: {metrics['major_concerns']}
-              - Suggestions: {metrics['suggestions']}
+ 
+              # Generate quality metrics
+              high_issues = len(re.findall(r'severity\**:\s*high', review_content.lower()))
+              medium_issues = len(re.findall(r'severity\**:\s*medium', review_content.lower()))
+              low_issues = len(re.findall(r'severity\**:\s*low', review_content.lower()))
+              # Calculate a simple quality score (0-100)
+              # Weighted by severity: high=5, medium=2, low=1
+              total_weighted_issues = (high_issues * 5) + (medium_issues * 2) + low_issues
+              max_possible_issues = 20  # Assuming this is a reasonable upper bound
+              quality_score = max(0, 100 - min(100, (total_weighted_issues / max_possible_issues) * 100))
+ 
+              # Format final review
+              review = f"""## Python Best Practices Review: {file_path}
+ 
+              ### Quality Metrics
+              - Overall Quality Score: {quality_score:.1f}/100
+              - High Severity Issues: {high_issues}
+              - Medium Severity Issues: {medium_issues}
+              - Low Severity Issues: {low_issues}
+              - Functions: {func_count}
+              - Classes: {class_count}
+ 
               ### Detailed Review
               {review_content}
+              ---
+              *This review was automatically generated to check adherence to Python best practices*
               """
-              post_review(review)
-              # Generate and execute test cases
-              test_cases = generate_test_cases(content)
-              test_results = execute_test_cases(test_cases, file_path)
-              # Post test results
-              test_review = f"""## Test Results for {file_path}
-              ### Generated Test Cases
-              ```python
-              {test_cases}
-              ```
-              ### Test Execution Results
-              ```
-              {test_results}
-              ```
-              """
-              post_review(test_review)
+              post_review(review, file_path)
+              print(f"Posted review for {file_path}")
           EOL
-          python review_and_test.py
+ 
+          python python_review.py
